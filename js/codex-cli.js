@@ -5,13 +5,13 @@ let floatingWindow = null;
 let terminal = null;
 let fitAddon = null;
 let websocket = null;
-let claudeRunning = false;
+let codexRunning = false;
 
 app.registerExtension({
-    name: "comfy.claude-code",
+    name: "comfy.codex-cli",
 
     async setup() {
-        console.log("Claude Code extension loading...");
+        console.log("Codex CLI extension loading...");
 
         // Load xterm.js
         await loadXtermDependencies();
@@ -35,7 +35,7 @@ app.registerExtension({
         // Start workflow sync
         startWorkflowSync();
 
-        console.log("Claude Code extension loaded");
+        console.log("Codex CLI extension loaded");
     },
 });
 
@@ -85,7 +85,7 @@ function createFloatingWindow() {
         <div class="claude-resize-corner claude-resize-se"></div>
         <div class="claude-header">
             <div class="claude-title-area">
-                <span class="claude-title">Claude Code</span>
+                <span class="claude-title">Codex CLI</span>
                 <div class="claude-mcp-status" title="MCP Server Status">
                     <span class="mcp-indicator"></span>
                     <span class="mcp-label">MCP</span>
@@ -359,7 +359,7 @@ function createFloatingWindow() {
             cursor: nwse-resize;
         }
 
-        #claude-menu-btn {
+        #codex-menu-btn {
             background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
             border: none;
             color: white;
@@ -371,7 +371,7 @@ function createFloatingWindow() {
             margin-left: 8px;
         }
 
-        #claude-menu-btn:hover {
+        #codex-menu-btn:hover {
             background: linear-gradient(135deg, #7c7ff2 0%, #6366f1 100%);
         }
     `;
@@ -552,14 +552,6 @@ function initTerminal(terminalContainer) {
             }
         };
 
-        // Shift+Enter: insert a literal newline (for multi-line input in Claude)
-        // Send ESC + Enter sequence that terminals like iTerm2/WezTerm use for Shift+Enter
-        // This is recognized by Claude Code as multiline input (not submit)
-        if (event.key === "Enter" && event.shiftKey) {
-            send("\x1b\r"); // ESC + CR - common terminal escape for Shift+Enter
-            return false;
-        }
-
         // Option/Alt + Left Arrow: move word left (send ESC-b)
         if (altKey && event.key === "ArrowLeft") {
             send("\x1bb");
@@ -670,15 +662,15 @@ function connectWebSocket() {
 
     // Determine WebSocket URL
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/ws/claude-terminal`;
+    const wsUrl = `${protocol}//${window.location.host}/ws/codex-terminal`;
 
-    console.log(`[Claude Code] Connecting to ${wsUrl}`);
+    console.log(`[Codex CLI] Connecting to ${wsUrl}`);
 
     try {
         websocket = new WebSocket(wsUrl);
 
         websocket.onopen = () => {
-            console.log("[Claude Code] WebSocket connected");
+            console.log("[Codex CLI] WebSocket connected");
 
             // Clear terminal first
             terminal.clear();
@@ -696,8 +688,7 @@ function connectWebSocket() {
                 // Send size immediately
                 sendSize();
 
-                // Send resize multiple times after claude has started to force proper rendering
-                // Claude needs SIGWINCH to redraw properly
+                // Send resize multiple times after Codex starts to force proper rendering.
                 setTimeout(sendSize, 300);
                 setTimeout(sendSize, 800);
                 setTimeout(sendSize, 1500);
@@ -731,16 +722,16 @@ function connectWebSocket() {
         };
 
         websocket.onclose = (event) => {
-            console.log("[Claude Code] WebSocket closed:", event.code, event.reason);
+            console.log("[Codex CLI] WebSocket closed:", event.code, event.reason);
             terminal.writeln("\n\x1b[1;31mTerminal disconnected.\x1b[0m");
             terminal.writeln("Click ↻ to reload.\n");
         };
 
         websocket.onerror = (error) => {
-            console.error("[Claude Code] WebSocket error:", error);
+            console.error("[Codex CLI] WebSocket error:", error);
         };
     } catch (e) {
-        console.error("[Claude Code] Failed to create WebSocket:", e);
+        console.error("[Codex CLI] Failed to create WebSocket:", e);
         terminal.writeln(`\x1b[1;31mFailed to connect: ${e.message}\x1b[0m\n`);
     }
 }
@@ -890,8 +881,8 @@ function addMenuButton(floatingWindow) {
             clearInterval(checkMenu);
 
             const btn = document.createElement("button");
-            btn.id = "claude-menu-btn";
-            btn.textContent = "Claude Code";
+            btn.id = "codex-menu-btn";
+            btn.textContent = "Codex CLI";
             btn.addEventListener("click", () => {
                 if (floatingWindow.style.display === "none") {
                     floatingWindow.style.display = "flex";
@@ -918,10 +909,10 @@ function addContextMenuOption() {
     LGraphCanvas.prototype.getCanvasMenuOptions = function (...args) {
         const options = originalGetCanvasMenuOptions.apply(this, args);
 
-        // Add separator and Claude Code option
+        // Add separator and Codex CLI option
         options.push(null); // separator
         options.push({
-            content: "Open Claude Code",
+            content: "Open Codex CLI",
             callback: () => {
                 if (floatingWindow) {
                     floatingWindow.style.display = "flex";
@@ -974,7 +965,7 @@ async function checkMcpStatus() {
 
     try {
         // Try to reach the MCP server via our backend endpoint
-        const response = await fetch("/claude-code/mcp-status", {
+        const response = await fetch("/codex/mcp-status", {
             method: "GET",
             signal: AbortSignal.timeout(3000)
         });
@@ -1024,7 +1015,7 @@ async function syncWorkflow() {
         lastWorkflowHash = hash;
 
         // Send to backend (without graphToPrompt which can cause UI flicker)
-        await fetch("/claude-code/workflow", {
+        await fetch("/codex/workflow", {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
@@ -1052,14 +1043,14 @@ async function getWorkflowApi() {
 
 async function pollGraphCommands() {
     try {
-        const response = await fetch("/claude-code/graph-command");
+        const response = await fetch("/codex/graph-command");
         const data = await response.json();
 
         if (data.command) {
             const result = await executeGraphCommand(data.command);
 
             // Send result back
-            await fetch("/claude-code/graph-command", {
+            await fetch("/codex/graph-command", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({

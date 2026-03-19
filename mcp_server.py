@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-MCP Server for ComfyUI - Exposes workflow tools to Claude Code.
+MCP Server for ComfyUI - Exposes workflow tools to Codex CLI.
 
 This server connects to ComfyUI's API and provides tools to:
 - View the current workflow
@@ -12,15 +12,11 @@ This server connects to ComfyUI's API and provides tools to:
 Usage:
     python mcp_server.py
 
-Configure in Claude Code's settings (~/.claude/settings.json):
-{
-    "mcpServers": {
-        "comfyui": {
-            "command": "python",
-            "args": ["/path/to/mcp_server.py"]
-        }
-    }
-}
+Configure in Codex CLI's settings (~/.codex/config.toml):
+
+[mcp_servers.comfyui]
+command = "python"
+args = ["/path/to/mcp_server.py"]
 """
 
 import json
@@ -31,6 +27,8 @@ import urllib.error
 import urllib.parse
 import base64
 from typing import Any
+
+PLUGIN_ROUTE_PREFIXES = ["/codex", "/claude-code"]
 
 # ComfyUI API endpoint
 def get_comfyui_url() -> str:
@@ -134,10 +132,21 @@ def make_request(endpoint: str, method: str = "GET", data: dict = None, timeout:
         return {"error": f"Unexpected error: {type(e).__name__}: {e}"}
 
 
+def make_plugin_request(endpoint: str, method: str = "GET", data: dict = None, timeout: int = None) -> dict:
+    """Try the current plugin route first, then the legacy compatibility route."""
+    last_error = {"error": f"Failed to reach plugin endpoint: {endpoint}"}
+    for prefix in PLUGIN_ROUTE_PREFIXES:
+        result = make_request(f"{prefix}{endpoint}", method=method, data=data, timeout=timeout)
+        if "error" not in result:
+            return result
+        last_error = result
+    return last_error
+
+
 def get_workflow() -> dict:
     """Get the current workflow from ComfyUI."""
     # First try to get the live workflow from our plugin endpoint
-    live_workflow = make_request("/claude-code/workflow")
+    live_workflow = make_plugin_request("/workflow")
 
     if live_workflow and live_workflow.get("workflow"):
         return {
@@ -154,7 +163,7 @@ def get_workflow() -> dict:
         return history
 
     if not history:
-        return {"message": "No workflow found. Make sure ComfyUI is open in a browser with the Claude Code plugin loaded."}
+        return {"message": "No workflow found. Make sure ComfyUI is open in a browser with the Codex plugin loaded."}
 
     # Get the most recent prompt
     latest_id = list(history.keys())[-1] if history else None
@@ -883,7 +892,7 @@ def run_node(node_ids) -> dict:
 
 def send_graph_command(action: str, params: dict) -> dict:
     """Send a graph manipulation command to the frontend."""
-    result = make_request("/claude-code/graph-command", method="POST", data={
+    result = make_plugin_request("/graph-command", method="POST", data={
         "action": action,
         "params": params
     })
@@ -1387,7 +1396,7 @@ def get_layout_summary() -> str:
     """Get a compact layout summary showing node positions and sizes.
 
     Returns bounding boxes for all nodes in TOON-like format (token-efficient)
-    so Claude can see occupied space and avoid collisions when placing new nodes.
+    so Codex can see occupied space and avoid collisions when placing new nodes.
 
     Format:
         canvas: min_x,min_y to max_x,max_y

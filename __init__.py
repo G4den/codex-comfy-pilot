@@ -1,10 +1,11 @@
-# ComfyUI Claude Code Plugin
-# A floating window extension for Claude Code integration
+# ComfyUI Codex CLI Plugin
+# A floating window extension for Codex CLI integration
 # Windows-compatible version - terminal disabled, REST endpoints enabled
 
 import asyncio
 import json
 import os
+import shlex
 import sys
 import struct
 import hashlib
@@ -38,31 +39,54 @@ NODE_DISPLAY_NAME_MAPPINGS = {}
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 
+LOG_PREFIX = "[Codex CLI]"
+WS_ROUTE = "/ws/codex-terminal"
+LEGACY_WS_ROUTE = "/ws/claude-terminal"
+API_ROUTE_PREFIX = "/codex"
+LEGACY_API_ROUTE_PREFIX = "/claude-code"
 
-def has_claude_conversation(working_dir=None):
-    """Check if there's an existing Claude conversation for the given directory."""
+
+def log(message):
+    print(f"{LOG_PREFIX} {message}")
+
+
+def shell_join(parts):
+    return " ".join(shlex.quote(str(part)) for part in parts)
+
+
+def has_codex_session(working_dir=None):
+    """Check if there's an existing Codex session for the given directory."""
     if working_dir is None:
         working_dir = os.getcwd()
 
-    # Claude stores projects in ~/.claude/projects/<path-with-dashes>/
-    # e.g., /Users/const/projects/foo -> -Users-const-projects-foo
-    claude_dir = Path.home() / ".claude" / "projects"
-
-    if not claude_dir.exists():
+    sessions_dir = Path.home() / ".codex" / "sessions"
+    if not sessions_dir.exists():
         return False
 
-    # Convert path to Claude's folder naming format
-    abs_path = os.path.abspath(working_dir)
-    folder_name = abs_path.replace("/", "-").replace("\\", "-")
-
-    project_dir = claude_dir / folder_name
-
-    if not project_dir.exists():
+    target_dir = os.path.normcase(os.path.abspath(working_dir))
+    try:
+        session_files = sorted(
+            sessions_dir.rglob("*.jsonl"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
         return False
 
-    # Check for conversation JSONL files
-    conversation_files = list(project_dir.glob("*.jsonl"))
-    return len(conversation_files) > 0
+    for session_file in session_files:
+        try:
+            with session_file.open("r", encoding="utf-8") as handle:
+                first_line = handle.readline().strip()
+            if not first_line:
+                continue
+            payload = json.loads(first_line).get("payload", {})
+            session_cwd = payload.get("cwd")
+            if session_cwd and os.path.normcase(os.path.abspath(session_cwd)) == target_dir:
+                return True
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            continue
+
+    return False
 
 
 def find_executable(name, verbose=False):
@@ -73,19 +97,20 @@ def find_executable(name, verbose=False):
     path = shutil.which(name)
     if path:
         if verbose:
-            print(f"[Claude Code] Found {name} via shutil.which: {path}")
+            log(f"Found {name} via shutil.which: {path}")
         return path
 
     if verbose:
-        print(f"[Claude Code] {name} not in PATH, checking common locations...")
+        log(f"{name} not in PATH, checking common locations...")
 
-    # Common locations for npm/node/claude on different systems
+    # Common locations for CLI tools installed via package managers.
     common_paths = [
         # macOS Homebrew
         f"/opt/homebrew/bin/{name}",
         f"/usr/local/bin/{name}",
         # Linux common paths
         f"/usr/bin/{name}",
+        os.path.expanduser(f"~/.local/bin/{name}"),
         # nvm default location
         os.path.expanduser(f"~/.nvm/versions/node/*/bin/{name}"),
         # npm global installs
@@ -108,75 +133,55 @@ def find_executable(name, verbose=False):
         common_paths.extend([
             os.path.expanduser(f"~\\AppData\\Local\\Programs\\{name}\\{name}.exe"),
             os.path.expanduser(f"~\\AppData\\Roaming\\npm\\{name}.cmd"),
-            os.path.expanduser(f"~\\.claude\\local\\{name}.exe"),
+            os.path.expanduser(f"~\\.codex\\local\\{name}.exe"),
         ])
 
     import glob
     for pattern in common_paths:
         matches = glob.glob(pattern)
         if verbose and matches:
-            print(f"[Claude Code] Checking {pattern}: found {matches}")
+            log(f"Checking {pattern}: found {matches}")
         if matches:
             # Return the first match (or latest version for nvm-style paths)
             matches.sort(reverse=True)
             if os.path.isfile(matches[0]) and os.access(matches[0], os.X_OK):
                 if verbose:
-                    print(f"[Claude Code] Found executable: {matches[0]}")
+                    log(f"Found executable: {matches[0]}")
                 return matches[0]
 
     if verbose:
-        print(f"[Claude Code] {name} not found in any common location")
+        log(f"{name} not found in any common location")
     return None
 
 
-def is_claude_installed():
-    """Check if claude CLI is installed."""
-    return find_executable("claude") is not None
+def is_codex_installed():
+    """Check if Codex CLI is installed."""
+    return find_executable("codex") is not None
 
 
-def install_claude_code():
-    """Attempt to install Claude Code CLI. Returns (success, message)."""
+def install_codex_cli():
+    """Attempt to install Codex CLI. Returns (success, message)."""
     import subprocess
-    import platform
-
-    system = platform.system().lower()
 
     try:
-        if system == "windows":
-            # Check if running in PowerShell or CMD
-            # Try PowerShell first (more common)
-            print("[Claude Code] Installing Claude Code CLI via PowerShell...")
-            result = subprocess.run(
-                ["powershell", "-Command", "irm https://claude.ai/install.ps1 | iex"],
-                capture_output=True,
-                text=True,
-                timeout=120
-            )
-            if result.returncode != 0:
-                # Fallback to CMD method
-                print("[Claude Code] PowerShell failed, trying CMD...")
-                result = subprocess.run(
-                    ["cmd", "/c", "curl -fsSL https://claude.ai/install.cmd -o install.cmd && install.cmd && del install.cmd"],
-                    capture_output=True,
-                    text=True,
-                    timeout=120
-                )
-        else:
-            # macOS, Linux, WSL - use the shell script
-            print("[Claude Code] Installing Claude Code CLI...")
-            result = subprocess.run(
-                ["bash", "-c", "curl -fsSL https://claude.ai/install.sh | bash"],
-                capture_output=True,
-                text=True,
-                timeout=120
-            )
+        npm_path = find_executable("npm")
+        if not npm_path:
+            return False, "npm not found. Install Node.js, then run: npm install -g @openai/codex"
+
+        log(f"Installing Codex CLI with {npm_path}...")
+        result = subprocess.run(
+            [npm_path, "install", "-g", "@openai/codex"],
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
 
         if result.returncode == 0:
-            print("[Claude Code] Claude Code CLI installed successfully!")
-            return True, "Claude Code CLI installed successfully!"
+            log("Codex CLI installed successfully")
+            return True, "Codex CLI installed successfully"
         else:
             error_msg = result.stderr or result.stdout or "Unknown error"
-            print(f"[Claude Code] Installation failed: {error_msg}")
+            log(f"Installation failed: {error_msg}")
             return False, f"Installation failed: {error_msg}"
     except subprocess.TimeoutExpired:
         return False, "Installation timed out after 120 seconds"
@@ -184,24 +189,18 @@ def install_claude_code():
         return False, f"Installation error: {str(e)}"
 
 
-def get_claude_command(working_dir=None):
-    """Get the appropriate claude command based on whether a conversation exists.
+def get_codex_command(working_dir=None):
+    """Get the appropriate Codex command for the current working directory.
 
-    Returns the full path to claude if found via find_executable, otherwise just 'claude'.
+    Resumes the most recent session for the working directory when possible.
     """
-    # Try to get the full path to claude
-    claude_path = find_executable("claude")
-    if claude_path:
-        if has_claude_conversation(working_dir):
-            return f"{claude_path} -c"
-        else:
-            return claude_path
-    else:
-        # Fallback - let the shell try to find it
-        if has_claude_conversation(working_dir):
-            return "claude -c"
-        else:
-            return "claude"
+    working_dir = os.path.abspath(working_dir or os.getcwd())
+    codex_path = find_executable("codex") or "codex"
+    command = [codex_path]
+    if has_codex_session(working_dir):
+        command.extend(["resume", "--last"])
+    command.extend(["--cd", working_dir])
+    return shell_join(command)
 
 
 class WebSocketTerminal:
@@ -221,7 +220,7 @@ class WebSocketTerminal:
     def spawn(self, command=None):
         """Spawn a new PTY with an optional command."""
         if IS_WINDOWS:
-            print("[Claude Code] Terminal not supported on Windows")
+            log("Terminal not supported on Windows")
             return False
             
         # Get the user's default shell
@@ -366,7 +365,10 @@ def log_memory(context=""):
     if now - _last_memory_log >= MEMORY_LOG_INTERVAL:
         _last_memory_log = now
         breakdown = get_plugin_memory_breakdown()
-        print(f"[Claude Code] Plugin data: {breakdown['total_plugin_kb']:.1f}KB | Sessions: {breakdown['terminal_sessions']}" + (f" | {context}" if context else ""))
+        log(
+            f"Plugin data: {breakdown['total_plugin_kb']:.1f}KB | Sessions: {breakdown['terminal_sessions']}"
+            + (f" | {context}" if context else "")
+        )
 
 
 def get_plugin_memory_breakdown():
@@ -501,7 +503,7 @@ async def run_node_handler(request):
 
         # Queue using the prompt_queue.put method
         PromptServer.instance.prompt_queue.put(
-            (0, prompt_id, prompt, {"client_id": "claude-code"}, [node_id_str])
+            (0, prompt_id, prompt, {"client_id": "codex-cli"}, [node_id_str])
         )
 
         return web.json_response({
@@ -525,7 +527,7 @@ async def websocket_handler(request):
         # Send a message indicating terminal is not supported on Windows
         await ws.send_str(json.dumps({
             "type": "error",
-            "message": "Terminal not supported on Windows. Use Clawdbot or Claude Code CLI directly."
+            "message": "Embedded terminal is not supported on Windows yet. Use Codex CLI in a separate terminal."
         }))
         await ws.close()
         return ws
@@ -537,33 +539,31 @@ async def websocket_handler(request):
     initial_rows = 24
     initial_cols = 80
 
-    print(f"[Claude Code] WebSocket connected: {session_id}")
+    log(f"WebSocket connected: {session_id}")
     log_memory("ws connect")
 
     # Get command from query params, or auto-detect
     command = request.query.get("cmd", None)
     if command is None:
-        command = get_claude_command()
-        print(f"[Claude Code] Auto-detected command: {command}")
+        command = get_codex_command()
+        log(f"Auto-detected command: {command}")
 
-    # If claude is not found (command is just "claude" without path), try to install it
-    if command in ("claude", "claude -c"):
-        print("[Claude Code] Claude CLI not found, attempting auto-install...")
-        success, message = install_claude_code()
+    # If codex is not found and the user did not override the command, try to install it.
+    if request.query.get("cmd") is None and not is_codex_installed():
+        log("Codex CLI not found, attempting auto-install...")
+        success, message = install_codex_cli()
         if success:
-            # Re-detect the command with the newly installed claude
-            command = get_claude_command()
-            print(f"[Claude Code] After install, command: {command}")
+            command = get_codex_command()
+            log(f"After install, command: {command}")
         else:
-            print(f"[Claude Code] Auto-install failed: {message}")
+            log(f"Auto-install failed: {message}")
             # Continue anyway - user will see the error in the terminal
 
-    # Try to set up MCP if not already configured (may have been skipped at load time
-    # if claude wasn't installed yet)
+    # Try to set up MCP if not already configured.
     try:
         setup_mcp_config()
     except Exception as e:
-        print(f"[Claude Code] MCP setup error (non-fatal): {e}")
+        log(f"MCP setup error (non-fatal): {e}")
 
     async def read_pty():
         """Read from PTY and send to WebSocket."""
@@ -580,7 +580,7 @@ async def websocket_handler(request):
                     pending_data.append(data)
                     read_event.set()
             except Exception as e:
-                print(f"[Claude Code] Read callback error: {e}")
+                log(f"Read callback error: {e}")
 
         loop.add_reader(fd, on_readable)
 
@@ -593,7 +593,7 @@ async def websocket_handler(request):
                     data = pending_data.pop(0)
                     await ws.send_str("o" + data)
         except Exception as e:
-            print(f"[Claude Code] Read error: {e}")
+            log(f"Read error: {e}")
         finally:
             try:
                 loop.remove_reader(fd)
@@ -628,13 +628,13 @@ async def websocket_handler(request):
                             terminal_started = True
                             # Start reading task
                             read_task = asyncio.create_task(read_pty())
-                            print(f"[Claude Code] Terminal started with size {cols}x{rows}")
+                            log(f"Terminal started with size {cols}x{rows}")
                         else:
                             terminal.resize(rows, cols)
                 except json.JSONDecodeError:
                     pass
             elif msg.type == web.WSMsgType.ERROR:
-                print(f"[Claude Code] WebSocket error: {ws.exception()}")
+                log(f"WebSocket error: {ws.exception()}")
                 break
     finally:
         terminal.running = False
@@ -642,7 +642,7 @@ async def websocket_handler(request):
             read_task.cancel()
         terminal.close()
         del terminal_sessions[session_id]
-        print(f"[Claude Code] WebSocket disconnected: {session_id}")
+        log(f"WebSocket disconnected: {session_id}")
         log_memory("ws disconnect")
 
     return ws
@@ -705,24 +705,29 @@ def get_comfyui_url_cached():
 
 def setup_routes(app):
     """Set up the WebSocket and API routes."""
-    app.router.add_get("/ws/claude-terminal", websocket_handler)
-    app.router.add_get("/claude-code/workflow", workflow_handler)
-    app.router.add_post("/claude-code/workflow", workflow_handler)
-    app.router.add_post("/claude-code/run-node", run_node_handler)
-    app.router.add_get("/claude-code/graph-command", graph_command_handler)
-    app.router.add_post("/claude-code/graph-command", graph_command_handler)
-    app.router.add_get("/claude-code/mcp-status", mcp_status_handler)
-    app.router.add_get("/claude-code/memory", memory_stats_handler)
-    app.router.add_get("/claude-code/platform", platform_info_handler)
-    print("[Claude Code] Terminal WebSocket endpoint registered at /ws/claude-terminal")
-    print("[Claude Code] Workflow API endpoint registered at /claude-code/workflow")
-    print("[Claude Code] Run node endpoint registered at /claude-code/run-node")
-    print("[Claude Code] Graph command endpoint registered at /claude-code/graph-command")
-    print("[Claude Code] MCP status endpoint registered at /claude-code/mcp-status")
-    print("[Claude Code] Memory stats endpoint registered at /claude-code/memory")
-    print("[Claude Code] Platform info endpoint registered at /claude-code/platform")
+    for route in (WS_ROUTE, LEGACY_WS_ROUTE):
+        app.router.add_get(route, websocket_handler)
+
+    for prefix in (API_ROUTE_PREFIX, LEGACY_API_ROUTE_PREFIX):
+        app.router.add_get(f"{prefix}/workflow", workflow_handler)
+        app.router.add_post(f"{prefix}/workflow", workflow_handler)
+        app.router.add_post(f"{prefix}/run-node", run_node_handler)
+        app.router.add_get(f"{prefix}/graph-command", graph_command_handler)
+        app.router.add_post(f"{prefix}/graph-command", graph_command_handler)
+        app.router.add_get(f"{prefix}/mcp-status", mcp_status_handler)
+        app.router.add_get(f"{prefix}/memory", memory_stats_handler)
+        app.router.add_get(f"{prefix}/platform", platform_info_handler)
+
+    log(f"Terminal WebSocket endpoint registered at {WS_ROUTE}")
+    log(f"Workflow API endpoint registered at {API_ROUTE_PREFIX}/workflow")
+    log(f"Run node endpoint registered at {API_ROUTE_PREFIX}/run-node")
+    log(f"Graph command endpoint registered at {API_ROUTE_PREFIX}/graph-command")
+    log(f"MCP status endpoint registered at {API_ROUTE_PREFIX}/mcp-status")
+    log(f"Memory stats endpoint registered at {API_ROUTE_PREFIX}/memory")
+    log(f"Platform info endpoint registered at {API_ROUTE_PREFIX}/platform")
+    log(f"Legacy route aliases remain available under {LEGACY_API_ROUTE_PREFIX}")
     if IS_WINDOWS:
-        print("[Claude Code] Note: Terminal functionality disabled on Windows")
+        log("Note: terminal functionality is disabled on Windows")
 
 
 def write_comfyui_url():
@@ -738,18 +743,17 @@ def write_comfyui_url():
         url = f"http://{address}:{port}"
         with open(url_file, "w") as f:
             f.write(url)
-        print(f"[Claude Code] ComfyUI URL written to {url_file}: {url}")
+        log(f"ComfyUI URL written to {url_file}: {url}")
     except Exception as e:
         # Fallback to default
         with open(url_file, "w") as f:
             f.write("http://127.0.0.1:8188")
-        print(f"[Claude Code] Using default ComfyUI URL")
+        log("Using default ComfyUI URL")
 
 
 def setup_mcp_config():
-    """Set up MCP server configuration for Claude Code using claude mcp add."""
+    """Set up MCP server configuration for Codex CLI using `codex mcp add`."""
     import subprocess
-    import shutil
 
     # Get the directory where this plugin is installed
     plugin_dir = os.path.dirname(os.path.abspath(__file__))
@@ -758,43 +762,43 @@ def setup_mcp_config():
     # Find the Python executable - use the same one running this code
     python_path = sys.executable
 
-    # Check if claude is available (use find_executable to check common paths)
-    claude_path = find_executable("claude")
-    if not claude_path:
-        print("[Claude Code] 'claude' command not found - MCP server not configured (will retry when terminal opens)")
+    # Check if codex is available (use find_executable to check common paths)
+    codex_path = find_executable("codex")
+    if not codex_path:
+        log("'codex' command not found - MCP server not configured (will retry when terminal opens)")
         return
 
     # Check if MCP server is already configured
     try:
         result = subprocess.run(
-            [claude_path, "mcp", "get", "comfyui"],
+            [codex_path, "mcp", "get", "comfyui", "--json"],
             capture_output=True,
             text=True,
             timeout=10
         )
         if result.returncode == 0:
-            print("[Claude Code] MCP server 'comfyui' already configured")
+            log("MCP server 'comfyui' already configured")
             return
     except (subprocess.TimeoutExpired, FileNotFoundError):
         pass
 
-    # Add MCP server using claude mcp add
+    # Add MCP server using codex mcp add
     # Use full paths for both python and mcp_server.py
     try:
         result = subprocess.run(
-            [claude_path, "mcp", "add", "comfyui", python_path, mcp_server_path],
+            [codex_path, "mcp", "add", "comfyui", "--", python_path, mcp_server_path],
             capture_output=True,
             text=True,
             timeout=30
         )
         if result.returncode == 0:
-            print(f"[Claude Code] MCP server added: {python_path} {mcp_server_path}")
+            log(f"MCP server added: {python_path} {mcp_server_path}")
         else:
-            print(f"[Claude Code] Failed to add MCP server: {result.stderr}")
+            log(f"Failed to add MCP server: {result.stderr or result.stdout}")
     except subprocess.TimeoutExpired:
-        print("[Claude Code] Timeout adding MCP server")
+        log("Timeout adding MCP server")
     except FileNotFoundError:
-        print("[Claude Code] 'claude' command not found - MCP server not configured")
+        log("'codex' command not found - MCP server not configured")
 
 
 # Hook into ComfyUI's server setup
@@ -807,17 +811,14 @@ try:
     # Write ComfyUI URL for MCP server
     write_comfyui_url()
 
-    # Set up MCP configuration (skip on Windows if claude not found)
-    if not IS_WINDOWS:
-        setup_mcp_config()
-    else:
-        print("[Claude Code] Skipping MCP auto-config on Windows (use Clawdbot instead)")
+    # Set up MCP configuration when Codex CLI is available.
+    setup_mcp_config()
 
     # Log initial memory usage
     mem_mb = get_memory_mb()
     platform_note = " (Windows - terminal disabled)" if IS_WINDOWS else ""
-    print(f"[Claude Code] Plugin loaded successfully{platform_note} (Memory: {mem_mb:.1f}MB)")
+    log(f"Plugin loaded successfully{platform_note} (Memory: {mem_mb:.1f}MB)")
 except Exception as e:
-    print(f"[Claude Code] Failed to register routes: {e}")
+    log(f"Failed to register routes: {e}")
     import traceback
     traceback.print_exc()
