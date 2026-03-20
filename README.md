@@ -1,7 +1,4 @@
-# Comfy Pilot
-
-[![Stars](https://img.shields.io/github/stars/ConstantineB6/Comfy-Pilot)](https://github.com/ConstantineB6/Comfy-Pilot/stargazers)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+# Comfy Codex Pilot
 
 Comfy Pilot connects ComfyUI to Codex CLI. It syncs your live workflow from the browser to an MCP server so Codex can inspect it, edit it, run it, and look at generated images.
 
