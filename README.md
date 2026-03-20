@@ -2,89 +2,118 @@
 
 [![Stars](https://img.shields.io/github/stars/ConstantineB6/Comfy-Pilot)](https://github.com/ConstantineB6/Comfy-Pilot/stargazers)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![ComfyUI Registry](https://img.shields.io/badge/ComfyUI-Registry-blue)](https://registry.comfy.org/publishers/constantine/nodes/comfy-pilot)
 
-Talk to your ComfyUI workflows. Comfy Pilot gives Codex CLI direct access to see, edit, and run your workflows, with an embedded terminal right inside ComfyUI on Unix-like systems.
+Comfy Pilot connects ComfyUI to Codex CLI. It syncs your live workflow from the browser to an MCP server so Codex can inspect it, edit it, run it, and look at generated images.
+
+This repo is intended to be used locally as a custom node. It is not documented here as a registry or store install.
 
 ![Comfy Pilot](thumbnail.jpg)
 
-## Why?
+## What it does
 
-Building ComfyUI workflows usually means searching for nodes, wiring them manually, and tweaking values one at a time. With Comfy Pilot, you can describe the workflow you want instead:
+- Exposes your current ComfyUI workflow to Codex through MCP.
+- Lets Codex create, move, connect, configure, and delete nodes.
+- Lets Codex inspect images from Preview Image and Save Image nodes.
+- Provides an embedded Codex terminal on macOS and Linux.
+- Keeps working on Windows through the MCP bridge, but without the embedded terminal.
 
-- "Build me an SDXL workflow with ControlNet"
-- "Look at the output and increase the detail"
-- "Download the FLUX schnell model and wire up a starter workflow"
+## Local install
 
-Comfy Pilot syncs the live graph from the browser to an MCP server so Codex can inspect it, edit it, and run it.
+Clone this repo into your ComfyUI `custom_nodes` folder.
 
-## Installation
+### Windows
 
-### CLI (Recommended)
-
-```bash
-comfy node install comfy-pilot
+```powershell
+cd C:\Users\gade1\Documents\ComfyUI\custom_nodes
+git clone C:\Users\gade1\Documents\GitHub\codex-comfy-pilot
 ```
 
-### ComfyUI Manager
+If you prefer a symlink so edits in this repo are reflected immediately:
 
-1. Open ComfyUI.
-2. Click **Manager** -> **Install Custom Nodes**.
-3. Search for `Comfy Pilot`.
-4. Click **Install**.
-5. Restart ComfyUI.
+```powershell
+New-Item -ItemType SymbolicLink `
+  -Path "C:\Users\gade1\Documents\ComfyUI\custom_nodes\codex-comfy-pilot" `
+  -Target "C:\Users\gade1\Documents\GitHub\codex-comfy-pilot"
+```
 
-### Git Clone
+### macOS / Linux
 
 ```bash
-cd ~/Documents/ComfyUI/custom_nodes
-git clone https://github.com/ConstantineB6/comfy-pilot.git
+cd ~/ComfyUI/custom_nodes
+git clone /path/to/codex-comfy-pilot
 ```
+
+After that:
+
+1. Restart ComfyUI.
+2. Make sure Codex CLI is installed.
+3. Make sure Codex is logged in.
 
 ## Requirements
 
 - ComfyUI
 - Python 3.8+
 - Codex CLI
+- `git` for local clone-based install
 
-If `codex` is missing and `npm` is available, the plugin will try to install Codex automatically with:
+Install Codex CLI if needed:
 
 ```bash
 npm install -g @openai/codex
-```
-
-You still need to authenticate Codex separately:
-
-```bash
 codex login
 ```
 
-## Features
+If `codex` is missing and `npm` is available, the plugin will also try to install Codex automatically on startup.
 
-- **MCP Server**: Gives Codex CLI direct access to view, edit, and run your ComfyUI workflows.
-- **Embedded Terminal**: Runs Codex CLI inside ComfyUI on macOS and Linux.
-- **Workflow Sync**: Keeps the live browser graph available to the MCP server.
-- **Image Viewing**: Lets Codex inspect images from Preview Image and Save Image nodes.
-- **Graph Editing**: Create, delete, move, resize, connect, and configure nodes programmatically.
+## How to use it
 
-## Usage
+1. Start ComfyUI.
+2. Open a workflow in the browser.
+3. Let Comfy Pilot sync the workflow to its backend.
+4. On macOS or Linux, use the embedded `Codex CLI` panel inside ComfyUI.
+5. On Windows, open a separate terminal and run `codex` from there.
 
-1. Restart ComfyUI after installation.
-2. Open the floating `Codex CLI` window from the top-right corner or canvas context menu.
-3. Comfy Pilot registers its MCP server with Codex automatically when the `codex` CLI is available.
-4. Ask Codex to help with your workflow:
-   - `What nodes are in my current workflow?`
-   - `Add a KSampler node connected to my checkpoint loader.`
-   - `Look at the preview image and tell me what you see.`
-   - `Run the workflow up to node 5.`
+Example prompts:
 
-### Windows note
+- `What nodes are in my current workflow?`
+- `Add a KSampler node connected to my checkpoint loader.`
+- `Look at the preview image and tell me what you see.`
+- `Run the workflow up to node 5.`
 
-The embedded terminal is still disabled on Windows in this plugin build. The MCP bridge still works, so you can run `codex` in a separate terminal after Comfy Pilot configures the MCP server.
+## Windows behavior
 
-## MCP Tools
+The embedded terminal is currently disabled on Windows in this build.
 
-The MCP server provides these tools to Codex:
+That means:
+
+- The floating Codex panel may show `Terminal disconnected`.
+- Clicking reload will not make the embedded terminal work on Windows.
+- The MCP bridge can still work.
+- You should run `codex` in a separate terminal window.
+
+This is expected with the current implementation and is not, by itself, a sign that MCP failed.
+
+## MCP setup
+
+The plugin attempts to register its MCP server automatically with:
+
+```bash
+codex mcp add comfyui -- python /path/to/mcp_server.py
+```
+
+If automatic registration fails, add this manually to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.comfyui]
+command = "python"
+args = ["/path/to/comfy-pilot/mcp_server.py"]
+```
+
+Then restart Codex.
+
+## Available tools
+
+The MCP server exposes these tools to Codex:
 
 | Tool | Description |
 |------|-------------|
@@ -96,54 +125,44 @@ The MCP server provides these tools to Codex:
 | `run` | Run workflow, optionally up to a specific node, or interrupt |
 | `edit_graph` | Batch create, delete, move, connect, resize, and configure nodes |
 | `view_image` | View images from Preview Image and Save Image nodes |
-| `search_custom_nodes` | Search ComfyUI Manager registry for custom nodes |
-| `install_custom_node` | Install a custom node from the registry |
+| `search_custom_nodes` | Search available custom nodes |
+| `install_custom_node` | Install a custom node |
 | `uninstall_custom_node` | Uninstall a custom node |
-| `update_custom_node` | Update a custom node to the latest version |
+| `update_custom_node` | Update a custom node |
 | `download_model` | Download models from Hugging Face, CivitAI, or direct URLs |
 
-## Architecture
+## Files
 
-- Browser frontend: `js/codex-cli.js`
-- Backend plugin: `__init__.py`
-- MCP server: `mcp_server.py`
-- Codex instructions: `AGENTS.md`
-
-The active browser bridge uses:
-
-- WebSocket: `/ws/codex-terminal`
-- HTTP API: `/codex/*`
-
-Legacy `/ws/claude-terminal` and `/claude-code/*` routes are still registered as compatibility aliases.
+- `__init__.py`: ComfyUI plugin backend and routes
+- `js/codex-cli.js`: browser frontend and embedded terminal UI
+- `mcp_server.py`: MCP server exposed to Codex
+- `AGENTS.md`: workflow guidance for Codex when operating on ComfyUI graphs
 
 ## Troubleshooting
 
 ### `codex` not found
 
-Install Codex CLI:
+Install Codex CLI and log in:
 
 ```bash
 npm install -g @openai/codex
 codex login
 ```
 
-If `npm` is not installed, install Node.js first.
+### `Terminal disconnected`
+
+On Windows, this is expected because the embedded terminal is disabled.
+
+On macOS or Linux, it usually means the WebSocket-backed terminal session failed to start. Check the ComfyUI console for plugin startup errors.
 
 ### MCP server not connecting
 
-The plugin auto-configures MCP on startup with `codex mcp add`. If that fails, add this to `~/.codex/config.toml`:
+Check that:
 
-```toml
-[mcp_servers.comfyui]
-command = "python"
-args = ["/path/to/comfy-pilot/mcp_server.py"]
-```
-
-Then restart Codex.
-
-### Terminal disconnected
-
-Click the reload button in the floating terminal, or check the ComfyUI console for plugin startup errors.
+- ComfyUI is running.
+- This repo is installed inside `custom_nodes`.
+- `codex` is installed and logged in.
+- The MCP config exists in `~/.codex/config.toml` if auto-registration failed.
 
 ## License
 
