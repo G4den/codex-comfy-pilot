@@ -7,8 +7,6 @@ Comfy Pilot connects ComfyUI to Codex CLI. It syncs your live workflow from the 
 
 This repo is intended to be used locally as a custom node. It is not documented here as a registry or store install.
 
-![Comfy Pilot](thumbnail.jpg)
-
 ## What it does
 
 - Exposes your current ComfyUI workflow to Codex through MCP.
